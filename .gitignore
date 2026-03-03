@@ -2,3 +2,4 @@ gcp-service-account.json
 .venv/
 venv/
 .DS_Store
+.env
