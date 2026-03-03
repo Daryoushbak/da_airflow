@@ -1,5 +1,14 @@
-gcp-service-account.json
+/credentials
+/source
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# venv
 .venv/
 venv/
-.DS_Store
-.env
+ENV/
