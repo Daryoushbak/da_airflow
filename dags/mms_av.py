@@ -1,121 +1,130 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from datetime import datetime, timedelta
+from datetime import datetime
 import paramiko
 import os
-from google.cloud import bigquery
+from google.cloud import bigquery, storage
 
-#DARYOUSH EDITTT!!!!
-
-# connection to source SFTP server and BigQuery configuration
+# SFTP config
 SFTP_HOST = os.getenv("AIRFLOW_CONN_MMS_SFTP_HOST")
 SFTP_USERNAME = os.getenv("AIRFLOW_CONN_MMS_SFTP_USERNAME")
 SFTP_PASSWORD = os.getenv("AIRFLOW_CONN_MMS_SFTP_PASSWORD")
 SFTP_PORT = os.getenv("AIRFLOW_CONN_MMS_SFTP_PORT")
 REMOTE_PATH = "/census/prod/"
-LOCAL_PATH = "source/mms/mms_av"
+
+# GCS config
+GCS_BUCKET = os.getenv("GCS_BUCKET", "your-gcs-bucket")
+GCS_PREFIX = "mms_av"
+
+# BigQuery config
 BQ_DATASET_ID = "dbt_vfinta"
 BQ_TABLE_ID = "source_mms_av"
+BQ_DATE_COLUMN = "file_date"  # column used for deduplication; adjust if differs
 
-def download_yesterdays_file():
-    os.makedirs(LOCAL_PATH, exist_ok=True)
-    yesterday_str = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
+
+def sftp_to_gcs(ds, **context):
+    """Stream file directly from SFTP to GCS for the logical date (ds = YYYY-MM-DD)."""
     
+    # logical_date is a pendulum.DateTime object auto-populated by Airflow, representing the execution date for this run
+    execution_date = logical_date.strftime("%Y%m%d")
+    print(execution_date, "should match the YYYYMMDD prefix of the SFTP file")
+
+    #date_str = ds.replace("-", "")  # YYYYMMDD
+
     transport = paramiko.Transport((SFTP_HOST, int(SFTP_PORT)))
     transport.connect(username=SFTP_USERNAME, password=SFTP_PASSWORD)
     transport.set_keepalive(30)
-    sftp = paramiko.SFTPClient.from_transport(transport, window_size=2**31-1, max_packet_size=2**31-1)
-    
-    remote_filename = None
-    for filename in sftp.listdir(REMOTE_PATH):
-        if filename.startswith(yesterday_str):
-            remote_filename = filename
-            break
-    
-    if not remote_filename:
-        print(f"No file found on SFTP server for yesterday's date ({yesterday_str}).")
+    sftp = paramiko.SFTPClient.from_transport(
+        transport, window_size=2**31 - 1, max_packet_size=2**31 - 1
+    )
+
+    try:
+        remote_filename = next(
+            (f for f in sftp.listdir(REMOTE_PATH) if f.startswith(execution_date)), None
+        )
+        if not remote_filename:
+            raise FileNotFoundError(f"No SFTP file found for date {execution_date}")
+
+        gcs_blob_path = f"{GCS_PREFIX}/{remote_filename}"
+        blob = storage.Client().bucket(GCS_BUCKET).blob(gcs_blob_path)
+
+        with sftp.open(os.path.join(REMOTE_PATH, remote_filename), "rb") as f:
+            f.prefetch()  # buffers ahead for faster reads over SFTP
+            blob.upload_from_file(f)
+
+        print(f"Streamed {remote_filename} to gs://{GCS_BUCKET}/{gcs_blob_path}")
+    finally:
         sftp.close()
         transport.close()
+
+
+def load_to_bq(**context):
+    """Compare dates in GCS vs BQ and load any files not yet present in the table."""
+    bq_client = bigquery.Client()
+    gcs_client = storage.Client()
+    table_ref_str = f"{BQ_DATASET_ID}.{BQ_TABLE_ID}"
+
+    # Dates already in BQ
+    try:
+        rows = bq_client.query(
+            f"SELECT DISTINCT {BQ_DATE_COLUMN} FROM `{table_ref_str}`"
+        ).result()
+        bq_dates = {row[0] for row in rows}
+    except Exception:
+        bq_dates = set()  # table doesn't exist yet on first run
+
+    # Dates available in GCS (derived from the YYYYMMDD filename prefix)
+    blobs = gcs_client.list_blobs(GCS_BUCKET, prefix=f"{GCS_PREFIX}/")
+    gcs_files = {
+        blob.name.split("/")[-1]: blob.name.split("/")[-1][:8]  # filename -> YYYYMMDD
+        for blob in blobs
+        if blob.name != f"{GCS_PREFIX}/"
+    }
+    gcs_dates = set(gcs_files.values())
+
+    dates_to_load = gcs_dates - bq_dates
+    if not dates_to_load:
+        print("No new dates to load into BQ.")
         return
 
-    print(f"Downloading {remote_filename}...")
-    remote_file_path = os.path.join(REMOTE_PATH, remote_filename)
-    local_file_path = os.path.join(LOCAL_PATH, remote_filename)
-    sftp.get(remote_file_path, local_file_path)
-    print(f"Downloaded {remote_filename} to {local_file_path}")
+    print(f"Dates in BQ:  {sorted(bq_dates)}")
+    print(f"Dates in GCS: {sorted(gcs_dates)}")
+    print(f"Starting Loading of:      {sorted(dates_to_load)}")
 
-    sftp.close()
-    transport.close()
-
-def upload_and_merge_to_bq():
-
-    client = bigquery.Client()
-    """
-    query = f"SELECT DISTINCT file_date FROM `{BQ_DATASET_ID}.{BQ_TABLE_ID}`"
-    query_job = client.query(query)
-    bq_dates = {row.file_date for row in query_job}
-    print(f"Dates already in BigQuery: {bq_dates}")
-    
-    local_files = {}
-    for filename in os.listdir(LOCAL_PATH):
-        if filename.endswith(".tsv.gz"):
-            date_str = filename.split('_')[0]
-            datetime.strptime(date_str, '%Y%m%d')
-            local_files[date_str] = filename
-
-    print(f"Local files found: {local_files}")
-
-    #Determine which files to upload
-    files_to_upload = {date: filename for date, filename in local_files.items() if date not in bq_dates}
-    print(f"Files to upload: {files_to_upload}")
-
-    if not files_to_upload:
-        print("No new files to upload.")
-        return
-    """
-    # 4. Append new data to BigQuery
-    table_ref = client.dataset(BQ_DATASET_ID).table(BQ_TABLE_ID)
     job_config = bigquery.LoadJobConfig(
         autodetect=True,
-        quote_character='',  # disables quote character interpretation
-        source_format=bigquery.SourceFormat.CSV, # CSV format can handle TSV with delimiter
-        field_delimiter='\t', # Added for TSV files
+        quote_character="",
+        source_format=bigquery.SourceFormat.CSV,
+        field_delimiter="\t",
         write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-        create_disposition=bigquery.CreateDisposition.CREATE_IF_NEEDED
+        create_disposition=bigquery.CreateDisposition.CREATE_IF_NEEDED,
     )
-    
-    """
-    for date, filename in files_to_upload.items():
-        local_file_path = os.path.join(LOCAL_PATH, filename)
-        print(f"Uploading {filename}...")
-        with open(local_file_path, "rb") as source_file:
-            job = client.load_table_from_file(source_file, table_ref, job_config=job_config)
+
+    table_ref = bq_client.dataset(BQ_DATASET_ID).table(BQ_TABLE_ID)
+    files_to_load = {f: d for f, d in gcs_files.items() if d in dates_to_load}
+
+    for filename, date_str in sorted(files_to_load.items()):
+        gcs_uri = f"gs://{GCS_BUCKET}/{GCS_PREFIX}/{filename}"
+        job = bq_client.load_table_from_uri(gcs_uri, table_ref, job_config=job_config)
         job.result()
-        print(f"Loaded {job.output_rows} rows from {filename} into {BQ_DATASET_ID}.{BQ_TABLE_ID}.")
-    """
-    filename = "20260302-UR-content_AV_Prod.tsv.gz"
-    local_file_path = os.path.join(LOCAL_PATH, filename)
-    print(f"Uploading {filename}...")
-    with open(local_file_path, "rb") as source_file:
-        job = client.load_table_from_file(source_file, table_ref, job_config=job_config)
-    job.result()
-    print(f"Loaded {job.output_rows} rows from {filename} into {BQ_DATASET_ID}.{BQ_TABLE_ID}.")
+        print(f"Loaded {job.output_rows} rows from {filename} ({date_str}) into {table_ref_str}")
 
 
 with DAG(
-    dag_id="sftp_to_bq_merge_dag",
+    dag_id="mms_av_sftp_to_bq",
     start_date=datetime(2026, 1, 1),
-    catchup=False,
+    schedule="@daily",
+    catchup=True, # must be true for backfilling and logical date handling!
 ) as dag:
 
-    task_download_file = PythonOperator(
-        task_id="download_yesterdays_file",
-        python_callable=download_yesterdays_file
+    task_sftp_to_gcs = PythonOperator(
+        task_id="sftp_to_gcs",
+        python_callable=sftp_to_gcs,
     )
 
-    task_upload_and_merge = PythonOperator(
-        task_id="upload_and_merge_to_bq",
-        python_callable=upload_and_merge_to_bq
+    task_load_bq = PythonOperator(
+        task_id="load_to_bq",
+        python_callable=load_to_bq,
     )
 
-    task_download_file >> task_upload_and_merge
+    task_sftp_to_gcs >> task_load_bq

@@ -1,5 +1,9 @@
+# secrets, env, crendetials
 /credentials
 /source
+.env
+/env
+/.env
 
 # Python
 __pycache__/
@@ -12,3 +16,6 @@ __pycache__/
 .venv/
 venv/
 ENV/
+
+# mac
+.DS_Store
