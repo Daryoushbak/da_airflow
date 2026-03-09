@@ -73,7 +73,7 @@ def load_to_bq(**context):
         rows = bq_client.query(
             f"SELECT DISTINCT {BQ_DATE_COLUMN} FROM `{table_ref_str}`"
         ).result()
-        bq_dates = {row[0] for row in rows}
+        bq_dates = {str(row[0]) for row in rows}
     except Exception:
         bq_dates = set()  # table doesn't exist yet on first run
 
@@ -106,6 +106,7 @@ def load_to_bq(**context):
 
     table_ref = bq_client.dataset(BQ_DATASET_ID).table(BQ_TABLE_ID)
     files_to_load = {f: d for f, d in gcs_files.items() if d in dates_to_load}
+    print("starting loop of files_to_load: ", files_to_load)
 
     for filename, date_str in sorted(files_to_load.items()):
     #for filename, date_str in sorted(gcs_files.items()):
