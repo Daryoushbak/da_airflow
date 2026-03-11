@@ -120,7 +120,7 @@ def load_to_bq(**context):
 with DAG(
     dag_id="mms_av_sftp_to_bq",
     start_date=datetime(2026, 3, 8),
-    schedule="@daily",
+    schedule="0 7 * * *",
     catchup=True, # must be true for backfilling and logical date handling!
 ) as dag:
 
