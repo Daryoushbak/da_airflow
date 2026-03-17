@@ -31,8 +31,6 @@ def sftp_to_gcs(ds, **context):
     fetch_date = ( logical_date - timedelta(days=1) ).strftime("%Y%m%d")
     print(fetch_date, "should match the YYYYMMDD prefix of the SFTP file")
 
-    #date_str = ds.replace("-", "")  # YYYYMMDD
-
     transport = paramiko.Transport((SFTP_HOST, int(SFTP_PORT)))
     transport.connect(username=SFTP_USERNAME, password=SFTP_PASSWORD)
     transport.set_keepalive(30)
@@ -119,7 +117,7 @@ def load_to_bq(**context):
 
 with DAG(
     dag_id="mms_av_sftp_to_bq",
-    start_date=datetime(2026, 3, 8),
+    start_date=datetime(2026, 3, 30),
     schedule="0 7 * * *",
     catchup=True, # must be true for backfilling and logical date handling!
 ) as dag:
