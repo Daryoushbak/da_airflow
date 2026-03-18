@@ -3,9 +3,13 @@ from airflow.operators.python import PythonOperator
 from datetime import datetime
 import requests
 import os
-import io
+from requests.auth import HTTPBasicAuth
 import json
+import requests
+from urllib.parse import urlparse
 from google.cloud import bigquery, storage
+import ssl
+import socket
 
 # HTTP config
 INFOKUBEN_URL = os.getenv("AIRFLOW_CONN_INFOKUB_URL")
@@ -25,27 +29,37 @@ BQ_TABLE_ID = "source_infokuben"
 
 FILE_NAME = f"{GCS_FILENAME_PREFIX}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{GCS_FILENAME_EXTENSION}"
 
+
 def http_to_gcs(**context):
-    """Fetch file from HTTP endpoint and upload to GCS, overwriting the previous."""
-    print("INFO HERE!!!!")
+    """Fetch file via curl and upload to GCS."""
+    
+    headers = {
+        "User-Agent": "curl/8.7.1",
+        "Accept": "*/*",
+        "Connection": "close",  # VERY IMPORTANT
+    }
+
     response = requests.get(
         INFOKUBEN_URL,
         auth=(INFOKUBEN_USERNAME, INFOKUBEN_PASSWORD),
-        verify=True,
-        timeout=120
+        headers=headers,
+        timeout=10,
+        verify=False,
     )
-    print("the get resquest was sent")
-    response.raise_for_status()
-    print("raised")
-    data = response.content
-    print("data was saved!")
 
-    print(f"Fetched {len(data)} bytes from {INFOKUBEN_URL}, assigning file_name: {FILE_NAME}")
+    print("Status:", response.status_code)
+    print("Length:", len(response.content))
+
 
     gcs_blob_path = f"{GCS_PREFIX}/{FILE_NAME}"
     gcs_client = storage.Client.from_service_account_info(service_account_info)
     blob = gcs_client.bucket(GCS_BUCKET).blob(gcs_blob_path)
-    blob.upload_from_file(io.BytesIO(data))
+    print("blob configuration done, starting upload...")
+    
+    blob.upload_from_string(response.text)
+    #with open(tmp.name, "rb") as f:
+    #    blob.upload_from_file(io.BytesIO(f.read()))
+
     print(f"Uploaded to gs://{GCS_BUCKET}/{gcs_blob_path}")
 
 
@@ -57,7 +71,7 @@ def load_to_bq(**context):
         autodetect=True,
         null_marker="NA",
         source_format=bigquery.SourceFormat.CSV,
-        field_delimiter="\;",
+        field_delimiter=";",
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
         create_disposition=bigquery.CreateDisposition.CREATE_IF_NEEDED,
         max_bad_records=0,
