@@ -1,15 +1,10 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from datetime import datetime
-import requests
 import os
-from requests.auth import HTTPBasicAuth
 import json
 import requests
-from urllib.parse import urlparse
 from google.cloud import bigquery, storage
-import ssl
-import socket
 
 # HTTP config
 INFOKUBEN_URL = os.getenv("AIRFLOW_CONN_INFOKUB_URL")
@@ -27,49 +22,40 @@ GCS_FILENAME_EXTENSION = ".csv"
 BQ_DATASET_ID = "dbt_vfinta"
 BQ_TABLE_ID = "source_infokuben"
 
-FILE_NAME = f"{GCS_FILENAME_PREFIX}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{GCS_FILENAME_EXTENSION}"
-
 
 def http_to_gcs(**context):
-    """Fetch file via curl and upload to GCS."""
-    
-    headers = {
-        "User-Agent": "curl/8.7.1",
-        "Accept": "*/*",
-        "Connection": "close",  # VERY IMPORTANT
-    }
+    gcs_file_name = f"{GCS_FILENAME_PREFIX}_{context['logical_date'].strftime('%Y_%m_%d')}{GCS_FILENAME_EXTENSION}"
+    gcs_blob_path = f"{GCS_PREFIX}/{gcs_file_name}"
 
+    print("Fetching file...")
     response = requests.get(
         INFOKUBEN_URL,
         auth=(INFOKUBEN_USERNAME, INFOKUBEN_PASSWORD),
-        headers=headers,
-        timeout=10,
-        verify=False,
+        timeout=30,
+        verify=False # ITs file servers has no SSL certificate :(
     )
+    response.raise_for_status()
+    data = response.content
+    print(f"Downloaded bytes: {len(data)}")
 
-    print("Status:", response.status_code)
-    print("Length:", len(response.content))
-
-
-    gcs_blob_path = f"{GCS_PREFIX}/{FILE_NAME}"
-    gcs_client = storage.Client.from_service_account_info(service_account_info)
-    blob = gcs_client.bucket(GCS_BUCKET).blob(gcs_blob_path)
-    print("blob configuration done, starting upload...")
-    
-    blob.upload_from_string(response.text)
-    #with open(tmp.name, "rb") as f:
-    #    blob.upload_from_file(io.BytesIO(f.read()))
-
+    print("Uploading to GCS...")
+    client = storage.Client.from_service_account_info(service_account_info)
+    client.bucket(GCS_BUCKET).blob(gcs_blob_path).upload_from_string(
+        data, content_type="application/xml", timeout=60
+    )
     print(f"Uploaded to gs://{GCS_BUCKET}/{gcs_blob_path}")
 
 
 def load_to_bq(**context):
-    """Truncate and reload the BQ table from the latest GCS file."""
+    gcs_file_name = f"{GCS_FILENAME_PREFIX}_{context['logical_date'].strftime('%Y_%m_%d')}{GCS_FILENAME_EXTENSION}"
+    gcs_blob_path = f"{GCS_PREFIX}/{gcs_file_name}"
+    gcs_uri = f"gs://{GCS_BUCKET}/{gcs_blob_path}"
+
     bq_client = bigquery.Client.from_service_account_info(service_account_info)
-    gcs_uri = f"gs://{GCS_BUCKET}/{GCS_PREFIX}/{FILE_NAME}"
     job_config = bigquery.LoadJobConfig(
         autodetect=True,
         null_marker="NA",
+        quote_character="",
         source_format=bigquery.SourceFormat.CSV,
         field_delimiter=";",
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
@@ -78,6 +64,7 @@ def load_to_bq(**context):
     )
 
     table_ref = bq_client.dataset(BQ_DATASET_ID).table(BQ_TABLE_ID)
+    print(f"Loading from: {gcs_uri}")
     job = bq_client.load_table_from_uri(gcs_uri, table_ref, job_config=job_config)
     job.result()
     print(f"Loaded {job.output_rows} rows into {BQ_DATASET_ID}.{BQ_TABLE_ID}")

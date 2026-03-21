@@ -17,4 +17,8 @@ source .venv/bin/activate
 4. Install the dependencies: `pip install -r requirements.txt`
     - If you don’t have pip (or pip3 installed) installed the do this first: `python -m ensurepip --upgrade`
 5. run it in local development mode with `airflow standalone`
-6. You cna start developing your dags. If you change the code inside a dag you might need to click "reparse dag" for it to update.
+6. You can start developing your dags. If you change the code inside a dag you might need to click "reparse dag" for it to update.
+
+If you're on mac you might also need to set this environment variable:
+export NO_PROXY="*"
+As the mac proxy and airflow have some strange interactions and can cause requests to hang indefinitely
