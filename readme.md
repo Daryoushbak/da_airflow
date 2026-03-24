@@ -13,7 +13,10 @@ This project contains the Airflow DAGs for our analytics team.
 ```
 source .env 
 source .venv/bin/activate
-```
+If getting error on windows : activate then run these two commands:
+PS C:\Users\daba\Documents\valle_airflow_demo> Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+PS C:\Users\daba\Documents\valle_airflow_demo> .venv\Scripts\activate
+
 4. Install the dependencies: `pip install -r requirements.txt`
     - If you don’t have pip (or pip3 installed) installed the do this first: `python -m ensurepip --upgrade`
 5. run it in local development mode with `airflow standalone`

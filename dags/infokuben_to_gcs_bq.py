@@ -1,11 +1,16 @@
+import os
+import sys
+
+# Fix for Windows: os.register_at_fork is only available on Unix systems
+if not hasattr(os, 'register_at_fork'):
+    os.register_at_fork = lambda **kwargs: None
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from datetime import datetime
 import requests
-import os
 from requests.auth import HTTPBasicAuth
 import json
-import requests
 from urllib.parse import urlparse
 from google.cloud import bigquery, storage
 import ssl
