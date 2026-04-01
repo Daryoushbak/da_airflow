@@ -29,3 +29,5 @@ airflow.db
 airflow.db-shm
 airflow.db-wal
 simple_auth_manager_passwords.json.generated
+webserver_config.py
+standalone_admin_password.txt
